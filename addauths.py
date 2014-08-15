@@ -7,6 +7,7 @@ import httplib
 import libxml2
 import os
 import pickle
+import pymarc
 import requests
 import shelve
 import urllib2
@@ -19,10 +20,14 @@ NAMESPACES = {
 	"opensearch":"http://a9.com/-/spec/opensearch/1.1/",
 	"cluster":"http://viaf.org/viaf/terms#",
 	"xq":"http://www.loc.gov/zing/cql/xcql/",
-	"srw":"http://www.loc.gov/zing/srw/"
+	"srw":"http://www.loc.gov/zing/srw/",
+	"marc":"http://www.loc.gov/MARC21/slim"
 }
 
-ID_SUBJECT_RESOLVER = "http://id.loc.gov/vocabulary/subject/label/"
+# E.G. python addauths.py -o ./test_out.ead.xml -nrsv test.ead.xml 
+# E.G. python addauths.py -o ./test_out.marc.xml -nrsvm test.marc.xml 
+#ID_SUBJECT_RESOLVER = "http://id.loc.gov/vocabulary/subject/label/"
+ID_SUBJECT_RESOLVER = "http://id.loc.gov/authorities/label/"
 VIAF_SEARCH = "http://viaf.org/viaf/search"
 RSS_XML = "application/rss+xml" 
 APPLICATION_XML = "application/xml"
@@ -92,8 +97,18 @@ class Heading(object):
 #===============================================================================
 class XPaths(object):
 	"""
-	Constants for getting at the relevant parts of the EAD doc.
+	Constants for getting at the relevant parts of the EAD or MARC doc.
 	"""
+	# MARCXML
+	MNAMES = "/marc:collection/marc:record/marc:datafield[@tag='100']/marc:subfield[@code='a']"
+
+	MNAMES_RECURSIVE = "//marc:datafield[@tag='100']/marc:subfield[@code='a']"
+
+	MSUBJECTS = "//marc:datafield[@tag='600'][1]/marc:subfield[@code='a']"
+
+	MSUBJECTS_RECURSIVE = "//marc:datafield[@tag='600']/marc:subfield[@code='a']"
+
+	# EAD
 	NAMES = "/ead:ead/ead:archdesc/ead:controlaccess/ead:corpname" + \
 				"[not(@authfilenumber)]|" + \
 		"/ead:ead/ead:archdesc/ead:controlaccess/ead:famname" + \
@@ -113,9 +128,12 @@ class XPaths(object):
 	
 	SUBJECTS_RECURSIVE = "//ead:subject" + \
 							"[not(@source = 'local') and not(@authfilenumber)]"
+							
+	
 
 #===============================================================================
 # _normalize_heading
+# TODO concat heading from MARCXML
 #===============================================================================
 def _normalize_heading(heading):
 
@@ -133,7 +151,7 @@ def _normalize_heading(heading):
 	if collapsed.endswith("."):
 		stripped = collapsed[:-1]
 	else:
-		stripped = collapsed	 
+		stripped = collapsed
 	return stripped
 
 #===============================================================================
@@ -176,7 +194,7 @@ def query_viaf(name, type, accept=RSS_XML):
 			label = ctxt.xpathEval("//title[parent::item]")[0].content
 			return (uri, label)
 		elif count == 0:
-			msg = "Not found: " + name + os.linesep
+			msg = "Not found (v): " + name + os.linesep
 			raise HeadingNotFoundException(msg, name, type)	
 		elif count > 1:
 			# check for an exact match, we'll return that
@@ -237,9 +255,8 @@ def query_lc(subject):
 	if resp.status_code == 200:
 		uri = resp.headers["x-uri"]
 		label = resp.headers["x-preflabel"]
-		return uri, label
 	elif resp.status_code == 404:
-		msg = "Not found: " + subject + os.linesep
+		msg = "Not found (lc): " + subject + os.linesep
 		raise HeadingNotFoundException(msg, subject, Heading.SUBJECT)
 	else: # resp.status_code != 404 and status != 200:
 		msg = " Response for \"" + subject + "\" was "
@@ -249,17 +266,16 @@ def query_lc(subject):
 #===============================================================================
 # update_headings
 #===============================================================================
-def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False):
+def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=False):
 	for node in ctxt.xpathEval(xpath):
 		try:
 			heading = _normalize_heading(node.content)
-			
 			element_name = node.get_name()
 			heading_type = ""
 			if element_name == Heading.SUBJECT: heading_type = Heading.SUBJECT
 			elif element_name == "corpname":  heading_type = Heading.CORPORATE
 			else: heading_type == Heading.PERSONAL
-				
+			
 			# Check the shelf right off
 			if heading in shelf:
 				cached = shelf[heading]
@@ -267,7 +283,13 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False):
 					# we only get here if no exceptions above 
 					if verbose:	os.sys.stdout.write("[Cache] Found: " + heading + "\n") 
 					uri = cached.alternatives[0][0]
-					node.setProp("authfilenumber", uri)
+					if not mrx: # ead
+						node.setProp("authfilenumber", uri)
+					else: # mrx
+						sibling = libxml2.newNode('marc:datafield')
+						sibling.setContent(uri)
+						sibling.setProp("code","0")
+						node.addSibling(sibling)
 				elif len(cached.alternatives) > 1:
 					msg = "[Cache] Multiple matches for " + heading + "\n"
 					raise MultipleMatchesException(msg, heading, heading_type, cached.alternatives)
@@ -384,6 +406,8 @@ class CLI(object):
 		
 		# TODO:
 		epi = "TODO. See EX_* constants in CLI class for now."
+		
+		mHelp = "The input file is MaRCXML rather than EAD. URIs added to $0."
 	
 		oHelp = "Path to the output file. Writes to stdout if no option " + \
 			"is supplied."
@@ -403,6 +427,7 @@ class CLI(object):
 			"(zero or more than one hit headings)."
 
 		parser = ArgumentParser(description=desc, epilog=epi)
+		parser.add_argument("-m", "--marc", default=False, required=False, dest="mrx", action="store_true", help=mHelp)
 		parser.add_argument("-o", "--output", default=None, required=False, dest="outpath", help=oHelp)
 		parser.add_argument("-r", "--recursive", default=False, required=False, dest="recursive", action="store_true", help=rHelp)
 		parser.add_argument("-n", "--names", default=False, required=False, dest="names", action="store_true", help=nHelp)
@@ -428,6 +453,14 @@ class CLI(object):
 			"for more details.\n"
 			os.sys.stderr.write(msg)
 			exit(CLI.EX_WRONG_USAGE)
+			
+		if args.mrx:
+			marc_path = args.record
+			reader = pymarc.marcxml.parse_xml_to_array(marc_path)
+			if not reader:
+				msg = "-m flag used but input file isn't MaRCXML."
+				os.sys.stderr.write(msg)
+				exit(CLI.EX_WRONG_USAGE)
 	
 		if args.outpath:
 			outdir = os.path.dirname(args.outpath)
@@ -452,15 +485,31 @@ class CLI(object):
 			ctxt = doc.xpathNewContext()
 			for ns in NAMESPACES.keys():
 				ctxt.xpathRegisterNs(ns, NAMESPACES[ns])
-
+			# adding xpaths for marc -pmg
 			if args.subjects:
-				if args.recursive: xpath = XPaths.SUBJECTS_RECURSIVE
-				else: xpath = XPaths.SUBJECTS	
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose)
+				if args.recursive: 
+					if args.mrx:
+						xpath = XPaths.MSUBJECTS_RECURSIVE
+					else:
+						xpath = XPaths.SUBJECTS_RECURSIVE
+				else: 
+					if args.mrx:
+						xpath = XPaths.MSUBJECTS
+					else:
+						xpath = XPaths.SUBJECTS
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx)
 			if args.names:
-				if args.recursive: xpath = XPaths.NAMES_RECURSIVE
-				else: xpath = XPaths.NAMES	
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose)
+				if args.recursive:
+					if args.mrx:
+						xpath = XPaths.MNAMES_RECURSIVE
+					else:
+						xpath = XPaths.NAMES_RECURSIVE
+				else:
+					if args.mrx:
+						xpath = XPaths.MNAMES
+					else:
+						xpath = XPaths.NAMES
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx)
 			if args.outpath == None:
 				os.sys.stdout.write(doc.serialize("UTF-8", 1))
 			else:
