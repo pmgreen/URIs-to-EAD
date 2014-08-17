@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 #-*- coding: utf-8 -*-
-from argparse import ArgumentParser
+from argparse import ArgumentParser, RawTextHelpFormatter, RawDescriptionHelpFormatter
 from sys import exit
 from time import sleep
+import ConfigParser
 import httplib
 import libxml2
+import logging
 import os
 import pickle
 import pymarc
+import re
 import requests
 import shelve
+import subprocess
 import urllib2
 
 NAMESPACES = {
@@ -24,14 +28,15 @@ NAMESPACES = {
 	"marc":"http://www.loc.gov/MARC21/slim"
 }
 
-# E.G. python addauths.py -o ./test_out.ead.xml -nrsv test.ead.xml 
-# E.G. python addauths.py -o ./test_out.marc.xml -nrsvm test.marc.xml 
 #ID_SUBJECT_RESOLVER = "http://id.loc.gov/vocabulary/subject/label/"
 ID_SUBJECT_RESOLVER = "http://id.loc.gov/authorities/label/"
 VIAF_SEARCH = "http://viaf.org/viaf/search"
 RSS_XML = "application/rss+xml" 
 APPLICATION_XML = "application/xml"
 SHELF_FILE = "cache.db"
+
+LOG_FILENAME = "alternatives.log"
+LOG_FORMAT = "%(asctime)s %(filename)s %(message)s"
 
 #===============================================================================
 # HeadingNotFoundException
@@ -73,6 +78,7 @@ class UnexpectedResponseException(Exception): pass
 # Heading
 #===============================================================================
 class Heading(object):
+	# relates to ead
 	CORPORATE = "corporate"
 	PERSONAL = "personal"
 	SUBJECT = "subject"
@@ -100,13 +106,9 @@ class XPaths(object):
 	Constants for getting at the relevant parts of the EAD or MARC doc.
 	"""
 	# MARCXML
-	MNAMES = "/marc:collection/marc:record/marc:datafield[@tag='100']/marc:subfield[@code='a']"
-
-	MNAMES_RECURSIVE = "//marc:datafield[@tag='100']/marc:subfield[@code='a']"
-
-	MSUBJECTS = "//marc:datafield[@tag='600'][1]/marc:subfield[@code='a']"
-
-	MSUBJECTS_RECURSIVE = "//marc:datafield[@tag='600']/marc:subfield[@code='a']"
+	MNAMES = "/marc:collection/marc:record/marc:datafield[@tag='100' or @tag='700' or @tag='710' or @tag='711']/marc:subfield[@code='a']"
+	
+	MARC_FIELDS = "//marc:datafield"
 
 	# EAD
 	NAMES = "/ead:ead/ead:archdesc/ead:controlaccess/ead:corpname" + \
@@ -129,11 +131,9 @@ class XPaths(object):
 	SUBJECTS_RECURSIVE = "//ead:subject" + \
 							"[not(@source = 'local') and not(@authfilenumber)]"
 							
-	
 
 #===============================================================================
 # _normalize_heading
-# TODO concat heading from MARCXML
 #===============================================================================
 def _normalize_heading(heading):
 
@@ -255,8 +255,9 @@ def query_lc(subject):
 	if resp.status_code == 200:
 		uri = resp.headers["x-uri"]
 		label = resp.headers["x-preflabel"]
+		return uri, label
 	elif resp.status_code == 404:
-		msg = "Not found (lc): " + subject + os.linesep
+		msg = "Not found (in lc): " + subject + os.linesep
 		raise HeadingNotFoundException(msg, subject, Heading.SUBJECT)
 	else: # resp.status_code != 404 and status != 200:
 		msg = " Response for \"" + subject + "\" was "
@@ -266,18 +267,36 @@ def query_lc(subject):
 #===============================================================================
 # update_headings
 #===============================================================================
-def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=False):
+def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=False, log=False, ignore_cache=False):
+	mrx_sibs = []
+	h = ""
 	for node in ctxt.xpathEval(xpath):
+		# get 6XX - TODO: check with a venerable profcat -pmg
+		tag = node.properties.children
+		mrx_sub = re.match('^[6]',tag.content)
+		if mrx_sub:
+			for i in node.children: 
+				if i.type == "element":
+					mrx_sibs.append(i.content)
+			h = "--".join(mrx_sibs)
+			mrx_sibs = [] # empty the list
+		elif '100' in xpath: 
+			# TODO: This will be MNAMES (Marc NAMES) xpath, for just one subfield -pmg
+			h = node.content
+		else:
+			continue
+
 		try:
-			heading = _normalize_heading(node.content)
+			heading = _normalize_heading(h)
 			element_name = node.get_name()
 			heading_type = ""
+			# for eads TODO: works with ead as well as mrx?
 			if element_name == Heading.SUBJECT: heading_type = Heading.SUBJECT
 			elif element_name == "corpname":  heading_type = Heading.CORPORATE
 			else: heading_type == Heading.PERSONAL
 			
 			# Check the shelf right off
-			if heading in shelf:
+			if ignore_cache==False and heading in shelf:
 				cached = shelf[heading]
 				if len(cached.alternatives) == 1:
 					# we only get here if no exceptions above 
@@ -286,7 +305,7 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 					if not mrx: # ead
 						node.setProp("authfilenumber", uri)
 					else: # mrx
-						sibling = libxml2.newNode('marc:datafield')
+						sibling = libxml2.newNode('marc:subfield')
 						sibling.setContent(uri)
 						sibling.setProp("code","0")
 						node.addSibling(sibling)
@@ -297,17 +316,34 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 					msg = "[Cache] Not found: " + heading + "\n"
 					raise HeadingNotFoundException(msg, heading, heading_type)
 			else:
-				if heading_type == Heading.SUBJECT:
+				if mrx or heading_type == Heading.SUBJECT:
 					uri, auth = query_lc(heading)
 					# we only get here if no exceptions above 
-					if verbose:	os.sys.stdout.write("Found: " + heading + "\n")
-					node.setProp("authfilenumber", uri)
-					
-				else:
-					uri, auth = query_viaf(heading, Heading.pers_or_corp_from_node(node))
+					if verbose:	os.sys.stdout.write("Found (in lc): " + heading + "\n")
+					if not mrx: # ead
+						node.setProp("authfilenumber", uri)
+					elif mrx_sub: # mrx sub
+						kid = libxml2.newNode('marc:subfield')
+						kid.setContent(uri)
+						kid.setProp("code","0")
+						node.addChild(kid)
+					else: # mrx name
+						sibling = libxml2.newNode('marc:subfield')
+						sibling.setContent(uri)
+						sibling.setProp("code","0")
+						node.addSibling(sibling)
+				elif heading_type != Heading.SUBJECT: 
+					# TODO: skipping this for mrx; query_lc() seems to be getting it done. Check this. -pmg
+					uri, auth = query_viaf(heading, Heading.pers_or_corp_from_node(node)) 
 					# we only get here if no exceptions above 
-					if verbose:	os.sys.stdout.write("Found: " + heading + "\n")
-					node.setProp("authfilenumber", uri)
+					if verbose:	os.sys.stdout.write("Found (viaf): " + heading + "\n")
+					if not mrx: # ead
+						node.setProp("authfilenumber", uri)
+					else: # mrx
+						sibling = libxml2.newNode('marc:subfield')
+						sibling.setContent(uri)
+						sibling.setProp("code","0")
+						node.addSibling(sibling)
 
 				# we put the heading we found in the db
 				record = Heading()
@@ -317,10 +353,11 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 				record.alternatives = [(uri, auth)]
 				shelf[heading] = record
 
-				node.setProp("authfilenumber", uri)
+				if not mrx:
+					node.setProp("authfilenumber", uri)
 				
 				sleep(1) # A courtesy to the services.
-
+		
 		except UnexpectedResponseException, e:
 			os.sys.stderr.write(str(e))
 		
@@ -348,6 +385,13 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 					alt[1].replace("--", "-\-") + os.linesep 
 				comment = libxml2.newComment(content)
 				node.addNextSibling(comment)
+			if log: # TODO: test this!
+				logging.basicConfig(filename=LOG_FILENAME,level=logging.INFO,format=LOG_FORMAT)
+				content = os.linesep + "Possible URIs:" + os.linesep
+				for alt in m.items:
+					content += alt[0].replace("--", "-\-") + " : " + \
+					alt[1].replace("--", "-\-") + os.linesep 
+				logging.info(content)
 			if not heading in shelf:
 				# We still want to put this in the db
 				record = Heading()
@@ -402,12 +446,22 @@ class CLI(object):
 		status = CLI.EX_SOMETHING_ELSE
 		
 		desc = "Adds id.loc.gov URIs to subject headings and VIAF URIs to " + \
-				"name headings when established forms can be found."
+				"name headings when established forms can be found. Works with EAD or MaRCXML files."
 		
-		# TODO:
-		epi = "TODO. See EX_* constants in CLI class for now."
+		# note: defaults in config file can be overridden by args on commandline
+		# argparse...
+		epi = """Exit statuses:
+		 0 = All good
+		 9 = Something unanticipated went wrong
+		64 = The command was used incorrectly, e.g., with the wrong number of arguments, a bad flag, a bad syntax in a parameter, or whatever.
+		65 = The input data was incorrect in some way.
+		66 = Input file (not a system file) did not exist or was not readable.
+		70 = An internal software (not OS) error has been detected.
+		73 = User specified output file cannot be created.
+		74 = An error occurred while doing I/O on some file.
+		"""
 		
-		mHelp = "The input file is MaRCXML rather than EAD. URIs added to $0."
+		mHelp = "The input file is MaRCXML rather than EAD. Found URIs are put into $0."
 	
 		oHelp = "Path to the output file. Writes to stdout if no option " + \
 			"is supplied."
@@ -425,18 +479,55 @@ class CLI(object):
 			
 		vHelp = "Print messages to stdout (one-hit headings) and stderr " + \
 			"(zero or more than one hit headings)."
-
-		parser = ArgumentParser(description=desc, epilog=epi)
-		parser.add_argument("-m", "--marc", default=False, required=False, dest="mrx", action="store_true", help=mHelp)
-		parser.add_argument("-o", "--output", default=None, required=False, dest="outpath", help=oHelp)
-		parser.add_argument("-r", "--recursive", default=False, required=False, dest="recursive", action="store_true", help=rHelp)
-		parser.add_argument("-n", "--names", default=False, required=False, dest="names", action="store_true", help=nHelp)
-		parser.add_argument("-s", "--subjects", default=False, required=False, dest="subjects", action="store_true", help=sHelp)
-		parser.add_argument("-a", "--annotate", default=False, required=False, dest="annotate", action="store_true", help=aHelp)
-		parser.add_argument("-v", "--verbose", default=False, required=False, dest="verbose", action="store_true", help=vHelp)
-		parser.add_argument("record", default=None)
-		args = parser.parse_args()
-
+			
+		cHelp = "Does just what it says.\n"	
+		
+		lHelp = "Log alternatives.\n"
+		
+		cfgHelp = "Specify the config file. Defaults can be overridden. " + \
+			"At minimum, run e.g.: python addauths.py myfile.marc.xml"
+					
+		conf_parser = ArgumentParser(add_help=False, description=desc)
+		conf_parser.add_argument("-c", "--conf_file", required=False, dest="conf_file", help=cfgHelp)
+		args, remaining_argv = conf_parser.parse_known_args()
+		defaults = {
+			"marc" : False,
+			"outpath": None,
+			"recursive" : False,
+			"names" : False,
+			"subjects" : False,
+			"annotate" : False,
+			"verbose" : False,
+			"ignore_cache" : False,
+			"record": None,
+			"log" : False
+		}
+		# if -c or --config, override the defaults above
+		if args.conf_file:
+			config = ConfigParser.SafeConfigParser()
+			config.read([args.conf_file])
+			cfgdict = dict(config.items('Paths')) # Paths section of config file
+			booldict = dict(config.items('Booleans')) # Booleans section of config file
+			for k,v in booldict.iteritems():
+				# need to get the booleans as booleans, not as 'strings'
+				boo = config.getboolean('Booleans',k)
+				cfgdict[k]=boo
+			defaults = cfgdict
+			
+		parser = ArgumentParser(parents=[conf_parser],description=desc,formatter_class=RawDescriptionHelpFormatter,epilog=epi)
+		parser.set_defaults(**defaults)
+		parser.add_argument("-m", "--marc", required=False, dest="mrx", action="store_true", help=mHelp)
+		parser.add_argument("-o", "--output", required=False, dest="outpath", help=oHelp)
+		parser.add_argument("-r", "--recursive", required=False, dest="recursive", action="store_true", help=rHelp)
+		parser.add_argument("-n", "--names", required=False, dest="names", action="store_true", help=nHelp)
+		parser.add_argument("-s", "--subjects", required=False, dest="subjects", action="store_true", help=sHelp)
+		parser.add_argument("-a", "--annotate", required=False, dest="annotate", action="store_true", help=aHelp)
+		parser.add_argument("-v", "--verbose", required=False, dest="verbose", action="store_true", help=vHelp)
+		parser.add_argument("-C", "--ignore-cache",required=False, dest="ignore_cache", action="store_true", help=cHelp)
+		parser.add_argument("-l", "--log",required=False, dest="log", action="store_true", help=lHelp)
+		parser.add_argument("record")
+		args = parser.parse_args(remaining_argv)
+		
 		#=======================================================================
 		# Checks on our args and options. We can exit before we do any work.
 		#=======================================================================
@@ -454,11 +545,12 @@ class CLI(object):
 			os.sys.stderr.write(msg)
 			exit(CLI.EX_WRONG_USAGE)
 			
-		if args.mrx:
+		if args.mrx == True:
 			marc_path = args.record
+			# a quick and dirty test...
 			reader = pymarc.marcxml.parse_xml_to_array(marc_path)
 			if not reader:
-				msg = "-m flag used but input file isn't MaRCXML."
+				msg = "-m flag used but input file isn't MaRCXML.\n"
 				os.sys.stderr.write(msg)
 				exit(CLI.EX_WRONG_USAGE)
 	
@@ -473,35 +565,34 @@ class CLI(object):
 				os.sys.stderr.write(msg) 
 				exit(CLI.EX_CANT_CREATE)
 
-
 		#=======================================================================
 		# The work...
 		#=======================================================================
 		shelf = shelve.open(SHELF_FILE, protocol=pickle.HIGHEST_PROTOCOL)
 		doc = None
 		ctxt = None
+		
 		try:
 			doc = libxml2.parseFile(args.record)
 			ctxt = doc.xpathNewContext()
 			for ns in NAMESPACES.keys():
 				ctxt.xpathRegisterNs(ns, NAMESPACES[ns])
-			# adding xpaths for marc -pmg
 			if args.subjects:
 				if args.recursive: 
 					if args.mrx:
-						xpath = XPaths.MSUBJECTS_RECURSIVE
+						xpath = XPaths.MARC_FIELDS
 					else:
 						xpath = XPaths.SUBJECTS_RECURSIVE
 				else: 
 					if args.mrx:
-						xpath = XPaths.MSUBJECTS
+						xpath = XPaths.MARC_FIELDS
 					else:
 						xpath = XPaths.SUBJECTS
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx)
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx, log=args.log, ignore_cache=args.ignore_cache)
 			if args.names:
 				if args.recursive:
 					if args.mrx:
-						xpath = XPaths.MNAMES_RECURSIVE
+						xpath = XPaths.MNAMES
 					else:
 						xpath = XPaths.NAMES_RECURSIVE
 				else:
@@ -509,11 +600,16 @@ class CLI(object):
 						xpath = XPaths.MNAMES
 					else:
 						xpath = XPaths.NAMES
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx)
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx, log=args.log, ignore_cache=args.ignore_cache)
 			if args.outpath == None:
 				os.sys.stdout.write(doc.serialize("UTF-8", 1))
 			else:
 				doc.saveFormatFileEnc(args.outpath, "UTF-8", 1)
+						
+			# running an external script to indent the output file nicely
+			# TODO: out/ dir?
+			subprocess.check_call(['./format.sh', args.outpath])
+			
 			# if we got here...
 			status = CLI.EX_OK
 
@@ -537,7 +633,7 @@ class CLI(object):
 			status = CLI.EX_SOMETHING_ELSE
 		
 		finally:
-			# clean up!
+			# clean up!	
 			shelf.close()
 			if ctxt != None: ctxt.xpathFreeContext()
 			if doc != None: doc.freeDoc()
