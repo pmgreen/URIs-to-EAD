@@ -106,9 +106,9 @@ class XPaths(object):
 	Constants for getting at the relevant parts of the EAD or MARC doc.
 	"""
 	# MARCXML
-	MNAMES = "/marc:collection/marc:record/marc:datafield[@tag='100' or @tag='700' or @tag='710' or @tag='711']/marc:subfield[@code='a']"
+	MNAMES = "//marc:datafield[@tag='100' or @tag='110' or @tag='130' or @tag='700' or @tag='710' or @tag='730']"
 	
-	MARC_FIELDS = "//marc:datafield"
+	MARC_FIELDS = "//marc:datafield" # nodes are parsed in _update_headings
 
 	# EAD
 	NAMES = "/ead:ead/ead:archdesc/ead:controlaccess/ead:corpname" + \
@@ -268,21 +268,28 @@ def query_lc(subject):
 # update_headings
 #===============================================================================
 def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=False, log=False, ignore_cache=False):
-	mrx_sibs = []
+	mrx_subs = []
+	mrx_name = []
 	h = ""
 	for node in ctxt.xpathEval(xpath):
-		# get 6XX - TODO: check with a venerable profcat -pmg
+		# get 600, 610, 611, 630, 650, 651
 		tag = node.properties.children
-		mrx_sub = re.match('^[6]',tag.content)
+		mrx_sub = re.match('^6[0135][01]$',tag.content)
 		if mrx_sub:
-			for i in node.children: 
+			for i in node.children:
 				if i.type == "element":
-					mrx_sibs.append(i.content)
-			h = "--".join(mrx_sibs)
-			mrx_sibs = [] # empty the list
-		elif '100' in xpath: 
-			# TODO: This will be MNAMES (Marc NAMES) xpath, for just one subfield -pmg
-			h = node.content
+					if not re.match('^[02368]$',i.properties.content):
+						mrx_subs.append(i.content)
+			h = "--".join(mrx_subs)
+			if re.match(',$',h): # if name subj ending in comma, remove '--'
+				h.replace('--',' ')
+			mrx_subs = [] # empty the list
+		elif '100' in xpath: # names 
+			for i in node.children: 
+				if i.type == "element" and not re.match('^[befgjklnptu0468]$',i.properties.content):
+					mrx_name.append(i.content)
+			h = " ".join(mrx_name)
+			mrx_name = []
 		else:
 			continue
 
@@ -328,10 +335,11 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 						kid.setProp("code","0")
 						node.addChild(kid)
 					else: # mrx name
-						sibling = libxml2.newNode('marc:subfield')
-						sibling.setContent(uri)
-						sibling.setProp("code","0")
-						node.addSibling(sibling)
+						kid = libxml2.newNode('marc:subfield')
+						kid.setContent(uri)
+						kid.setProp("code","0")
+						node.addChild(kid)
+						#node.addSibling(sibling)
 				elif heading_type != Heading.SUBJECT: 
 					# TODO: skipping this for mrx; query_lc() seems to be getting it done. Check this. -pmg
 					uri, auth = query_viaf(heading, Heading.pers_or_corp_from_node(node)) 
@@ -441,7 +449,7 @@ class CLI(object):
 	"""An error occurred while doing I/O on some file."""
 		
 	def __init__(self):
-		
+			
 		# start by assuming something will go wrong:
 		status = CLI.EX_SOMETHING_ELSE
 		
@@ -488,7 +496,7 @@ class CLI(object):
 			"At minimum, run e.g.: python addauths.py myfile.marc.xml"
 					
 		conf_parser = ArgumentParser(add_help=False, description=desc)
-		conf_parser.add_argument("-c", "--conf_file", required=False, dest="conf_file", help=cfgHelp)
+		conf_parser.add_argument("-c", "--conf_file", default="addauths.cfg",required=False, dest="conf_file", help=cfgHelp)
 		args, remaining_argv = conf_parser.parse_known_args()
 		defaults = {
 			"marc" : False,
@@ -502,7 +510,7 @@ class CLI(object):
 			"record": None,
 			"log" : False
 		}
-		# if -c or --config, override the defaults above
+		# if -c or --conf_file, override the defaults above
 		if args.conf_file:
 			config = ConfigParser.SafeConfigParser()
 			config.read([args.conf_file])
@@ -513,6 +521,7 @@ class CLI(object):
 				boo = config.getboolean('Booleans',k)
 				cfgdict[k]=boo
 			defaults = cfgdict
+			print(defaults)
 			
 		parser = ArgumentParser(parents=[conf_parser],description=desc,formatter_class=RawDescriptionHelpFormatter,epilog=epi)
 		parser.set_defaults(**defaults)
@@ -527,7 +536,7 @@ class CLI(object):
 		parser.add_argument("-l", "--log",required=False, dest="log", action="store_true", help=lHelp)
 		parser.add_argument("record")
 		args = parser.parse_args(remaining_argv)
-		
+		print(args)
 		#=======================================================================
 		# Checks on our args and options. We can exit before we do any work.
 		#=======================================================================
@@ -571,7 +580,6 @@ class CLI(object):
 		shelf = shelve.open(SHELF_FILE, protocol=pickle.HIGHEST_PROTOCOL)
 		doc = None
 		ctxt = None
-		
 		try:
 			doc = libxml2.parseFile(args.record)
 			ctxt = doc.xpathNewContext()
@@ -605,10 +613,7 @@ class CLI(object):
 				os.sys.stdout.write(doc.serialize("UTF-8", 1))
 			else:
 				doc.saveFormatFileEnc(args.outpath, "UTF-8", 1)
-						
-			# running an external script to indent the output file nicely
-			# TODO: out/ dir?
-			subprocess.check_call(['./format.sh', args.outpath])
+	
 			
 			# if we got here...
 			status = CLI.EX_OK
@@ -634,6 +639,10 @@ class CLI(object):
 		
 		finally:
 			# clean up!	
+			# running an external script to indent the output file nicely
+			# TODO: out/ dir?
+			subprocess.check_call(['./format.sh', args.outpath])
+			
 			shelf.close()
 			if ctxt != None: ctxt.xpathFreeContext()
 			if doc != None: doc.freeDoc()

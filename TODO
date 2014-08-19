@@ -1,3 +1,5 @@
+ * separate marc utility, addauths-marc.py
+ 
  X Add a flag to ignore the cache (-C, --ignore-cache)
  
  X CLI config file?
@@ -13,5 +15,4 @@
  X Option for MaRCXML
  
  * out/ dir?
-
 
