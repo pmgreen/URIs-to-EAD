@@ -9,7 +9,7 @@ EAD
 
 MaRC
 ----
-* `addauths-marc.py` - get id.loc.gov uris into bib records.
+* `addauths-marc.py` - get id.loc.gov URIs into bib records.
 
 * `addowis-marc.py` - get OCLC Work Ids into bib records.
 
