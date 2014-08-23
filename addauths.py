@@ -78,7 +78,6 @@ class UnexpectedResponseException(Exception): pass
 # Heading
 #===============================================================================
 class Heading(object):
-	# relates to ead
 	CORPORATE = "corporate"
 	PERSONAL = "personal"
 	SUBJECT = "subject"
@@ -103,14 +102,8 @@ class Heading(object):
 #===============================================================================
 class XPaths(object):
 	"""
-	Constants for getting at the relevant parts of the EAD or MARC doc.
+	Constants for getting at the relevant parts of the EAD doc.
 	"""
-	# MARCXML
-	MNAMES = "//marc:datafield[@tag='100' or @tag='110' or @tag='130' or @tag='700' or @tag='710' or @tag='730']"
-	
-	MARC_FIELDS = "//marc:datafield" # nodes are parsed in _update_headings
-
-	# EAD
 	NAMES = "/ead:ead/ead:archdesc/ead:controlaccess/ead:corpname" + \
 				"[not(@authfilenumber)]|" + \
 		"/ead:ead/ead:archdesc/ead:controlaccess/ead:famname" + \
@@ -130,7 +123,6 @@ class XPaths(object):
 	
 	SUBJECTS_RECURSIVE = "//ead:subject" + \
 							"[not(@source = 'local') and not(@authfilenumber)]"
-							
 
 #===============================================================================
 # _normalize_heading
@@ -151,7 +143,7 @@ def _normalize_heading(heading):
 	if collapsed.endswith("."):
 		stripped = collapsed[:-1]
 	else:
-		stripped = collapsed
+		stripped = collapsed	 
 	return stripped
 
 #===============================================================================
@@ -194,7 +186,7 @@ def query_viaf(name, type, accept=RSS_XML):
 			label = ctxt.xpathEval("//title[parent::item]")[0].content
 			return (uri, label)
 		elif count == 0:
-			msg = "Not found (v): " + name + os.linesep
+			msg = "Not found: " + name + os.linesep
 			raise HeadingNotFoundException(msg, name, type)	
 		elif count > 1:
 			# check for an exact match, we'll return that
@@ -257,7 +249,7 @@ def query_lc(subject):
 		label = resp.headers["x-preflabel"]
 		return uri, label
 	elif resp.status_code == 404:
-		msg = "Not found (in lc): " + subject + os.linesep
+		msg = "Not found: " + subject + os.linesep
 		raise HeadingNotFoundException(msg, subject, Heading.SUBJECT)
 	else: # resp.status_code != 404 and status != 200:
 		msg = " Response for \"" + subject + "\" was "
@@ -267,41 +259,17 @@ def query_lc(subject):
 #===============================================================================
 # update_headings
 #===============================================================================
-def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=False, log=False, ignore_cache=False):
-	mrx_subs = []
-	mrx_name = []
-	h = ""
+def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False):
 	for node in ctxt.xpathEval(xpath):
-		# get 600, 610, 611, 630, 650, 651
-		tag = node.properties.children
-		mrx_sub = re.match('^6[0135][01]$',tag.content)
-		if mrx_sub:
-			for i in node.children:
-				if i.type == "element":
-					if not re.match('^[02368]$',i.properties.content):
-						mrx_subs.append(i.content)
-			h = "--".join(mrx_subs)
-			if re.match(',$',h): # if name subj ending in comma, remove '--'
-				h.replace('--',' ')
-			mrx_subs = [] # empty the list
-		elif '100' in xpath: # names 
-			for i in node.children: 
-				if i.type == "element" and not re.match('^[befgjklnptu0468]$',i.properties.content):
-					mrx_name.append(i.content)
-			h = " ".join(mrx_name)
-			mrx_name = []
-		else:
-			continue
-
 		try:
-			heading = _normalize_heading(h)
+			heading = _normalize_heading(node.content)
+			
 			element_name = node.get_name()
 			heading_type = ""
-			# for eads TODO: works with ead as well as mrx?
 			if element_name == Heading.SUBJECT: heading_type = Heading.SUBJECT
 			elif element_name == "corpname":  heading_type = Heading.CORPORATE
 			else: heading_type == Heading.PERSONAL
-			
+				
 			# Check the shelf right off
 			if ignore_cache==False and heading in shelf:
 				cached = shelf[heading]
@@ -309,13 +277,7 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 					# we only get here if no exceptions above 
 					if verbose:	os.sys.stdout.write("[Cache] Found: " + heading + "\n") 
 					uri = cached.alternatives[0][0]
-					if not mrx: # ead
-						node.setProp("authfilenumber", uri)
-					else: # mrx
-						sibling = libxml2.newNode('marc:subfield')
-						sibling.setContent(uri)
-						sibling.setProp("code","0")
-						node.addSibling(sibling)
+					node.setProp("authfilenumber", uri)
 				elif len(cached.alternatives) > 1:
 					msg = "[Cache] Multiple matches for " + heading + "\n"
 					raise MultipleMatchesException(msg, heading, heading_type, cached.alternatives)
@@ -323,35 +285,17 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 					msg = "[Cache] Not found: " + heading + "\n"
 					raise HeadingNotFoundException(msg, heading, heading_type)
 			else:
-				if mrx or heading_type == Heading.SUBJECT:
+				if heading_type == Heading.SUBJECT:
 					uri, auth = query_lc(heading)
 					# we only get here if no exceptions above 
-					if verbose:	os.sys.stdout.write("Found (in lc): " + heading + "\n")
-					if not mrx: # ead
-						node.setProp("authfilenumber", uri)
-					elif mrx_sub: # mrx sub
-						kid = libxml2.newNode('marc:subfield')
-						kid.setContent(uri)
-						kid.setProp("code","0")
-						node.addChild(kid)
-					else: # mrx name
-						kid = libxml2.newNode('marc:subfield')
-						kid.setContent(uri)
-						kid.setProp("code","0")
-						node.addChild(kid)
-						#node.addSibling(sibling)
-				elif heading_type != Heading.SUBJECT: 
-					# TODO: skipping this for mrx; query_lc() seems to be getting it done. Check this. -pmg
-					uri, auth = query_viaf(heading, Heading.pers_or_corp_from_node(node)) 
+					if verbose:	os.sys.stdout.write("Found: " + heading + "\n")
+					node.setProp("authfilenumber", uri)
+					
+				else:
+					uri, auth = query_viaf(heading, Heading.pers_or_corp_from_node(node))
 					# we only get here if no exceptions above 
-					if verbose:	os.sys.stdout.write("Found (viaf): " + heading + "\n")
-					if not mrx: # ead
-						node.setProp("authfilenumber", uri)
-					else: # mrx
-						sibling = libxml2.newNode('marc:subfield')
-						sibling.setContent(uri)
-						sibling.setProp("code","0")
-						node.addSibling(sibling)
+					if verbose:	os.sys.stdout.write("Found: " + heading + "\n")
+					node.setProp("authfilenumber", uri)
 
 				# we put the heading we found in the db
 				record = Heading()
@@ -361,11 +305,10 @@ def _update_headings(xpath, ctxt, shelf, annotate=False, verbose=False, mrx=Fals
 				record.alternatives = [(uri, auth)]
 				shelf[heading] = record
 
-				if not mrx:
-					node.setProp("authfilenumber", uri)
+				node.setProp("authfilenumber", uri)
 				
 				sleep(1) # A courtesy to the services.
-		
+
 		except UnexpectedResponseException, e:
 			os.sys.stderr.write(str(e))
 		
@@ -449,15 +392,14 @@ class CLI(object):
 	"""An error occurred while doing I/O on some file."""
 		
 	def __init__(self):
-			
+		
 		# start by assuming something will go wrong:
 		status = CLI.EX_SOMETHING_ELSE
 		
 		desc = "Adds id.loc.gov URIs to subject headings and VIAF URIs to " + \
-				"name headings when established forms can be found. Works with EAD or MaRCXML files."
+				"name headings when established forms can be found."
 		
 		# note: defaults in config file can be overridden by args on commandline
-		# argparse...
 		epi = """Exit statuses:
 		 0 = All good
 		 9 = Something unanticipated went wrong
@@ -521,7 +463,6 @@ class CLI(object):
 				boo = config.getboolean('Booleans',k)
 				cfgdict[k]=boo
 			defaults = cfgdict
-			print(defaults)
 			
 		parser = ArgumentParser(parents=[conf_parser],description=desc,formatter_class=RawDescriptionHelpFormatter,epilog=epi)
 		parser.set_defaults(**defaults)
@@ -553,15 +494,6 @@ class CLI(object):
 			"for more details.\n"
 			os.sys.stderr.write(msg)
 			exit(CLI.EX_WRONG_USAGE)
-			
-		if args.mrx == True:
-			marc_path = args.record
-			# a quick and dirty test...
-			reader = pymarc.marcxml.parse_xml_to_array(marc_path)
-			if not reader:
-				msg = "-m flag used but input file isn't MaRCXML.\n"
-				os.sys.stderr.write(msg)
-				exit(CLI.EX_WRONG_USAGE)
 	
 		if args.outpath:
 			outdir = os.path.dirname(args.outpath)
@@ -574,6 +506,7 @@ class CLI(object):
 				os.sys.stderr.write(msg) 
 				exit(CLI.EX_CANT_CREATE)
 
+
 		#=======================================================================
 		# The work...
 		#=======================================================================
@@ -585,36 +518,19 @@ class CLI(object):
 			ctxt = doc.xpathNewContext()
 			for ns in NAMESPACES.keys():
 				ctxt.xpathRegisterNs(ns, NAMESPACES[ns])
+
 			if args.subjects:
-				if args.recursive: 
-					if args.mrx:
-						xpath = XPaths.MARC_FIELDS
-					else:
-						xpath = XPaths.SUBJECTS_RECURSIVE
-				else: 
-					if args.mrx:
-						xpath = XPaths.MARC_FIELDS
-					else:
-						xpath = XPaths.SUBJECTS
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx, log=args.log, ignore_cache=args.ignore_cache)
+				if args.recursive: xpath = XPaths.SUBJECTS_RECURSIVE
+				else: xpath = XPaths.SUBJECTS	
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose)
 			if args.names:
-				if args.recursive:
-					if args.mrx:
-						xpath = XPaths.MNAMES
-					else:
-						xpath = XPaths.NAMES_RECURSIVE
-				else:
-					if args.mrx:
-						xpath = XPaths.MNAMES
-					else:
-						xpath = XPaths.NAMES
-				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose, mrx=args.mrx, log=args.log, ignore_cache=args.ignore_cache)
+				if args.recursive: xpath = XPaths.NAMES_RECURSIVE
+				else: xpath = XPaths.NAMES	
+				_update_headings(xpath, ctxt, shelf, annotate=args.annotate, verbose=args.verbose)
 			if args.outpath == None:
 				os.sys.stdout.write(doc.serialize("UTF-8", 1))
 			else:
 				doc.saveFormatFileEnc(args.outpath, "UTF-8", 1)
-	
-			
 			# if we got here...
 			status = CLI.EX_OK
 
@@ -639,10 +555,7 @@ class CLI(object):
 		
 		finally:
 			# clean up!	
-			# running an external script to indent the output file nicely
-			# TODO: out/ dir?
-			subprocess.check_call(['./format.sh', args.outpath])
-			
+			subprocess.Popen(['xmllint','--format','-o', args.outpath,'tmp.xml'])
 			shelf.close()
 			if ctxt != None: ctxt.xpathFreeContext()
 			if doc != None: doc.freeDoc()
