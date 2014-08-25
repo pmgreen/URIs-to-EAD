@@ -9,7 +9,7 @@ import libxml2
 import logging
 import os
 import pickle
-import pymarc
+import pymar
 import re
 import requests
 import shelve
@@ -24,8 +24,7 @@ NAMESPACES = {
 	"opensearch":"http://a9.com/-/spec/opensearch/1.1/",
 	"cluster":"http://viaf.org/viaf/terms#",
 	"xq":"http://www.loc.gov/zing/cql/xcql/",
-	"srw":"http://www.loc.gov/zing/srw/",
-	"marc":"http://www.loc.gov/MARC21/slim"
+	"srw":"http://www.loc.gov/zing/srw/"
 }
 
 #ID_SUBJECT_RESOLVER = "http://id.loc.gov/vocabulary/subject/label/"
@@ -410,9 +409,7 @@ class CLI(object):
 		73 = User specified output file cannot be created.
 		74 = An error occurred while doing I/O on some file.
 		"""
-		
-		mHelp = "The input file is MaRCXML rather than EAD. Found URIs are put into $0."
-	
+			
 		oHelp = "Path to the output file. Writes to stdout if no option " + \
 			"is supplied."
 		
@@ -435,13 +432,12 @@ class CLI(object):
 		lHelp = "Log alternatives.\n"
 		
 		cfgHelp = "Specify the config file. Defaults can be overridden. " + \
-			"At minimum, run e.g.: python addauths.py myfile.marc.xml"
+			"At minimum, run e.g.: python addauths.py myfile.ead.xml"
 					
 		conf_parser = ArgumentParser(add_help=False, description=desc)
 		conf_parser.add_argument("-c", "--conf_file", default="addauths.cfg",required=False, dest="conf_file", help=cfgHelp)
 		args, remaining_argv = conf_parser.parse_known_args()
 		defaults = {
-			"marc" : False,
 			"outpath": None,
 			"recursive" : False,
 			"names" : False,
@@ -466,7 +462,6 @@ class CLI(object):
 			
 		parser = ArgumentParser(parents=[conf_parser],description=desc,formatter_class=RawDescriptionHelpFormatter,epilog=epi)
 		parser.set_defaults(**defaults)
-		parser.add_argument("-m", "--marc", required=False, dest="mrx", action="store_true", help=mHelp)
 		parser.add_argument("-o", "--output", required=False, dest="outpath", help=oHelp)
 		parser.add_argument("-r", "--recursive", required=False, dest="recursive", action="store_true", help=rHelp)
 		parser.add_argument("-n", "--names", required=False, dest="names", action="store_true", help=nHelp)

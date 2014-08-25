@@ -20,7 +20,7 @@ import subprocess
 # - exceptions
 # - input and output mrk, mrc, mrx
 
-infile = "test.marc.xml"
+infile = "test_out.marc.xml"
 outfile = "owi_test_out.marc.xml"
 
 XID_RESOLVER = "http://xisbn.worldcat.org/webservices/xid/oclcnum/%s"

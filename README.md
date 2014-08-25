@@ -17,5 +17,5 @@ MaRC
 Dependencies:
 -------------
  * Requests: http://docs.python-requests.org/en/latest/index.html
-   (pip install requests)
+   (`pip install requests`)
  * libxml2
