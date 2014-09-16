@@ -19,6 +19,7 @@ import subprocess
 # - log
 # - exceptions
 # - input and output mrk, mrc, mrx
+# - check for existing $0
 
 infile = "./out/test.xml"
 outfile = "./out/test-uris.xml"
