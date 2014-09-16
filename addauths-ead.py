@@ -33,9 +33,11 @@ VIAF_SEARCH = "http://viaf.org/viaf/search"
 RSS_XML = "application/rss+xml" 
 APPLICATION_XML = "application/xml"
 SHELF_FILE = "cache.db"
-
-LOG_FILENAME = "alternatives.log"
+LOG_FILENAME = "log/alternatives.log"
 LOG_FORMAT = "%(asctime)s %(filename)s %(message)s"
+OUTDIR = "./out/"
+LOGDIR = "./log/"
+DBDIR = "./db"
 
 #===============================================================================
 # HeadingNotFoundException
@@ -122,6 +124,20 @@ class XPaths(object):
 	
 	SUBJECTS_RECURSIVE = "//ead:subject" + \
 							"[not(@source = 'local') and not(@authfilenumber)]"
+							
+#===============================================================================
+# setup
+#===============================================================================
+def setup():
+	"""
+	@note: Create log, out, and db dirs, if they don't exist.
+	"""
+	if not os.path.isdir(LOGDIR):
+		os.mkdir(LOGDIR,0775)
+	if not os.path.isdir(OUTDIR):
+		os.mkdir(OUTDIR,0775)
+	if not os.path.isdir(DBDIR):
+		os.mkdir(DBDIR,0775)
 
 #===============================================================================
 # _normalize_heading
@@ -391,6 +407,8 @@ class CLI(object):
 	"""An error occurred while doing I/O on some file."""
 		
 	def __init__(self):
+		
+		setup()
 		
 		# start by assuming something will go wrong:
 		status = CLI.EX_SOMETHING_ELSE

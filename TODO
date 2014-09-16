@@ -1,4 +1,4 @@
- * separate marc utility, addauths-marc.py
+ X separate marc utility, addauths-marc.py
  
  X Add a flag to ignore the cache (-C, --ignore-cache)
  
@@ -14,5 +14,7 @@
  
  X Option for MaRCXML
  
- * out/ dir?
+ X out/ dir?
+ 
+ * single config file with sections for each util?
 

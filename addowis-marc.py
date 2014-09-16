@@ -20,12 +20,16 @@ import subprocess
 # - exceptions
 # - input and output mrk, mrc, mrx
 
-infile = "test_out.marc.xml"
-outfile = "owi_test_out.marc.xml"
+infile = "./out/test.xml"
+outfile = "./out/test-uris.xml"
 
 XID_RESOLVER = "http://xisbn.worldcat.org/webservices/xid/oclcnum/%s"
 WORK_ID = "http://worldcat.org/entity/work/id/"
-SHELF_FILE = "owi_cache.db"
+SHELF_FILE = "./db/owi_cache.db"
+LOG_FILENAME = "./log/alternatives.log"
+LOG_FORMAT = "%(asctime)s %(filename)s %(message)s"
+OUTDIR = "./out/"
+LOGDIR = "./log/"
 
 def check_shelf(ocn):
 	shelf = shelve.open(SHELF_FILE, protocol=pickle.HIGHEST_PROTOCOL)
@@ -42,6 +46,7 @@ def check_shelf(ocn):
 def query_oclc(xid):
 	to_get = XID_RESOLVER % xid
 	to_get += "?method=getMetadata&format=xml&fl=*"
+	print(to_get)
 	headers = {"Accept":"application/xml"}
 	resp = requests.get(to_get, headers=headers, allow_redirects=True)
 	if resp.status_code == 200:
@@ -52,14 +57,13 @@ def query_oclc(xid):
 		return WORK_ID + x
 	elif resp.status_code == 404:
 		msg = "Not found (in oclc): " + xid + os.linesep
-		#raise HeadingNotFoundException(msg, subject, 'subject')
+		# TODO raise exception
 	elif resp.status_code == 500:
 		msg = "Server error " + xid
-		sleep(1) # try again in a sec.
 	else: # resp.status_code != 404 and status != 200 and status != 500:
 		msg = " Response for %s was " % xid
 		msg += "%s%s" % (resp.status_code, os.linesep)
-		#raise UnexpectedResponseException(msg)
+		# TODO raise exception
 		print(msg)
 	sleep(1)
 	
@@ -67,7 +71,7 @@ def query_oclc(xid):
 if __name__ == "__main__":
 	mrxheader = """<?xml version="1.0" encoding="UTF-8" ?>
 <collection xmlns="http://www.loc.gov/MARC21/slim" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.loc.gov/MARC21/slim http://www.loc.gov/standards/marcxml/schema/MARC21slim.xsd">"""
-	fh = open('owi_tmp.xml', 'w+')
+	fh = open('out/owi_tmp.xml', 'w+')
 	fh.write(mrxheader)
 	reader = pymarc.marcxml.parse_xml_to_array(infile)
 	for rec in reader:
@@ -76,7 +80,7 @@ if __name__ == "__main__":
 				if 'OCoLC' in s:
 					num = s.replace('(OCoLC)','')
 					workid = check_shelf(str(num))
-		if workid != None:
+		if workid != None and workdid != '':
 			field = pymarc.Field(
 				tag = '787', 
 				indicators = ['0',''],
@@ -89,4 +93,4 @@ if __name__ == "__main__":
 		fh.write(out)
 	fh.write("</collection>")
 	fh.close()
-	subprocess.Popen(['xmllint','--format','-o', outfile,'owi_tmp.xml'])
+	subprocess.Popen(['xmllint','--format','-o', outfile,'out/owi_tmp.xml'])

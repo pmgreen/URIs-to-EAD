@@ -4,6 +4,7 @@
 Based on URIs-to-EAD, gets uris from id.loc.gov into MaRC bib records.
 """
 from argparse import ArgumentParser, RawTextHelpFormatter, RawDescriptionHelpFormatter
+from lxml import html
 from sys import exit
 from time import sleep
 import ConfigParser
@@ -20,17 +21,17 @@ import subprocess
 
 # TODOs:
 # - input / output mrk or mrc or mrx: test file extension
-# - remove -o, output automatically using name of input file(?)
+# - remove -o, output automatically using name of input file (but leave option for new name)
 # - output mrc, mrk and marcxml
 # - VIAF?
 # - logging
+# - check for existing $0
 
 ID_SUBJECT_RESOLVER = "http://id.loc.gov/authorities/label/"
-VIAF_SEARCH = "http://viaf.org/viaf/search"
 RSS_XML = "application/rss+xml" 
 APPLICATION_XML = "application/xml"
-SHELF_FILE = "cache.db"
-LOG_FILENAME = "alternatives.log"
+SHELF_FILE = "db/cache.db"
+LOG_FILENAME = "log/alternatives.log"
 LOG_FORMAT = "%(asctime)s %(filename)s %(message)s"
 OUTDIR = "./out/"
 LOGDIR = "./log/"
@@ -39,15 +40,17 @@ LOGDIR = "./log/"
 # HeadingNotFoundException
 #===============================================================================
 class HeadingNotFoundException(Exception):
-	def __init__(self, msg, heading, type):
+	def __init__(self, msg, heading, type, instead=None):
 		super(HeadingNotFoundException, self).__init__(msg)
 		"""
 		@param msg: Message for logging
 		@param heading: The heading we were searching when this was raised
-		@param type: The type of heading (personal or corporate)  
+		@param type: The type of heading (personal or corporate) 
+		@param instead: The "Use instead" URI and string when heading is deprecated
 		"""
 		self.heading = heading
 		self.type = type
+		self.instead = instead
 
 #===============================================================================
 # MultipleMatchesException
@@ -90,12 +93,12 @@ class Heading(object):
 #===============================================================================
 def setup():
 	"""
-	@note: Create log and out dirs, if they don't exist.
+	@note: Create log, out, and db dirs, if they don't exist.
 	"""
 	if not os.path.isdir(LOGDIR):
-		os.mkdir(LOGDIR,0775)
+		os.mkdir(LOGDIR)
 	if not os.path.isdir(OUTDIR):
-		os.mkdir(OUTDIR,0775)
+		os.mkdir(OUTDIR)
 
 #===============================================================================
 # _normalize_heading
@@ -140,7 +143,17 @@ def query_lc(subject):
 	resp = requests.get(to_get, headers=headers, allow_redirects=True)
 	if resp.status_code == 200:
 		uri = resp.headers["x-uri"]
-		label = resp.headers["x-preflabel"]
+		try: 
+			label = resp.headers["x-preflabel"]
+		except: # x-preflabel is not returned for deprecated headings
+			msg = "Not found (in lc; deprecated): " + subject + os.linesep
+			tree = html.fromstring(resp.text)
+			see = tree.xpath("//h3/text()= 'Use Instead'") # this info isn't in the header, so grabbing from html
+			seeother = ''
+			if see:
+				other = tree.xpath("//h3[text() = 'Use Instead']/following-sibling::ul//div/a")[0]
+				seeother = (other.attrib['href'], other.text)
+			raise HeadingNotFoundException(msg, subject, 'subject',seeother) # put the see other url and value into the db
 		return uri, label
 	elif resp.status_code == 404:
 		msg = "Not found (in lc): " + subject + os.linesep
@@ -173,11 +186,10 @@ def _update_headings(h, ctxt, shelf, annotate=False, verbose=False, mrx=False, l
 				msg = "[Cache] Not found: " + heading + "\n"
 				raise HeadingNotFoundException(msg, heading, heading_type)
 		else:
-			if mrx: # TODO: check. leaving this for now, but maybe just for mrx, as opposed to mrc or mrk 
-				uri, auth = query_lc(heading)
-				## we only get here if no exceptions above 
-				if verbose:	os.sys.stdout.write("Found (in lc): " + heading + "\n")
-				pymarc.Field.add_subfield(ctxt,"0",uri)
+			uri, auth = query_lc(heading)
+			## we only get here if no exceptions above 
+			if verbose:	os.sys.stdout.write("Found (in lc): " + heading + "\n")
+			pymarc.Field.add_subfield(ctxt,"0",uri)
 
 			# we put the heading we found in the db
 			record = Heading()
@@ -198,10 +210,14 @@ def _update_headings(h, ctxt, shelf, annotate=False, verbose=False, mrx=False, l
 		if not heading in shelf:
 			# We still want to put this in the db
 			record = Heading()
-			record.value = e.heading
 			record.type = e.type
 			record.found = False
-			record.alternatives = []
+			if e.instead != None:
+				record.value = '(DEPRECATED) ' + e.heading
+				record.alternatives = [e.instead]
+			else:
+				record.value = e.heading
+				record.alternatives = []
 			shelf[heading] = record
 	
 	except MultipleMatchesException, m:
@@ -216,7 +232,7 @@ def _update_headings(h, ctxt, shelf, annotate=False, verbose=False, mrx=False, l
 				alt[1].replace("--", "-\-") + os.linesep 
 			comment = libxml2.newComment(content)
 			node.addNextSibling(comment)
-		if log: # TODO: test this!
+		if log: # TODO: test this
 			logging.basicConfig(filename=LOG_FILENAME,level=logging.INFO,format=LOG_FORMAT)
 			content = os.linesep + "Possible URIs:" + os.linesep
 			for alt in m.items:
@@ -239,10 +255,13 @@ def _update_headings(h, ctxt, shelf, annotate=False, verbose=False, mrx=False, l
 		record.found = True
 		record.alternatives = []
 		shelf[heading] = record
-		e.message = "Error: " + e.message + "\nThis is related to VIAF " + \
-		" sending data for\n\"" + heading + "\"\nthat we can't parse." +\
-		"\nThis has been been noted in the cache and this\nheading will" +\
-		" ignored in the future.\nRun again.\n"
+		#e.message = "Error: " + e.message + "\nThis is related to VIAF " + \
+		#" sending data for\n\"" + heading + "\"\nthat we can't parse." +\
+		#"\nThis has been been noted in the cache and this\nheading will" +\
+		#" ignored in the future.\nRun again.\n"
+		e.message = "Error: " + e.message + "\nThis is related to id.loc.gov " +\
+		" presenting 'Use instead...'. \nThis has been been noted in the cache and this\nheading will" +\
+		" ignored in the future.\nRun again.\n" + record.value
 		raise e
 
 class CLI(object):
@@ -278,7 +297,7 @@ class CLI(object):
 		# start by assuming something will go wrong:
 		status = CLI.EX_SOMETHING_ELSE
 		
-		desc = "Adds id.loc.gov URIs to subject headings and VIAF URIs to " + \
+		desc = "Adds id.loc.gov URIs to subject and " + \
 				"name headings when established forms can be found. Works with EAD or MaRCXML files."
 		
 		# note: defaults in config file can be overridden by args on commandline
@@ -357,7 +376,7 @@ class CLI(object):
 		parser.add_argument("-l", "--log",required=False, dest="log", action="store_true", help=lHelp)
 		parser.add_argument("-f", "--file",required=True, dest="record", help=rHelp)
 		args = parser.parse_args(remaining_argv)
-		# todo args to log -pmg
+		# TODO args to log -pmg
 
 		#=======================================================================
 		# Checks on our args and options. We can exit before we do any work.
@@ -450,9 +469,7 @@ class CLI(object):
 			# TODO: this logic needs to be above (or removed)
 			if args.outpath == None:
 				os.sys.stdout.write(out)
-			#else:
-				
-			
+
 			# if we got here...
 			status = CLI.EX_OK
 
