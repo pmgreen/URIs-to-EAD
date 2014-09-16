@@ -25,7 +25,6 @@ import subprocess
 # - output mrc, mrk and marcxml
 # - VIAF?
 # - logging
-# - check for existing $0
 
 ID_SUBJECT_RESOLVER = "http://id.loc.gov/authorities/label/"
 RSS_XML = "application/rss+xml" 
@@ -35,6 +34,7 @@ LOG_FILENAME = "log/alternatives.log"
 LOG_FORMAT = "%(asctime)s %(filename)s %(message)s"
 OUTDIR = "./out/"
 LOGDIR = "./log/"
+INDIR = "./in/"
 
 #===============================================================================
 # HeadingNotFoundException
@@ -99,6 +99,8 @@ def setup():
 		os.mkdir(LOGDIR)
 	if not os.path.isdir(OUTDIR):
 		os.mkdir(OUTDIR)
+	if not os.path.isdir(INDIR):
+		os.mkdir(INDIR)
 
 #===============================================================================
 # _normalize_heading
