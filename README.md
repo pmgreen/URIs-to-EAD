@@ -3,15 +3,15 @@ UNDER CONSTRUCTION
 
 EAD
 ---
-* `addauths.py` - add id.loc.gov URIs to EAD records. 
+* `ead.py` - add id.loc.gov URIs to EAD records. 
 
-     Do `addauths.py --help` for details.
+     Do `ead.py --help` for details.
 
 MaRC
 ----
-* `addauths-marc.py` - get id.loc.gov URIs into bib records.
+* `mrc.py` - get id.loc.gov URIs into bib records.
 
-* `addowis-marc.py` - get OCLC Work Ids into bib records.
+* `owi.py` - get OCLC Work Ids into bib records.
 
 
 Dependencies:
