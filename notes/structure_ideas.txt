@@ -1,0 +1,22 @@
+uris-to-recs
+├── mrc.py (flag for owi.py module?)
+├── ead.py
+├── cfg
+│   └── options.cfg
+├── db
+│   ├── auth.db
+│   └── owis.db
+├── log
+│   ├── alts.log
+│   └── jobs.log
+├── reports 
+│   └── mrc_uris_batchno_yyyymmdd.tsv 
+├── in
+│   └── marc.xml
+└── out
+    └── marc.xml w/ uris
+
+Examples (mrc):
+python mrc.py -c options.cfg -o myniceoutput.xml -f mymarcrecs.xml 
+python mrc.py -snvC -o myniceoutput.xml -f mymarcrecs.xml 
+python mrc.py -f mymarcrecs.xml
