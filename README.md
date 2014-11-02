@@ -9,7 +9,7 @@ EAD
 
 MaRC
 ----
-* `mrc.py` - get id.loc.gov URIs into bib records.
+* `mrc.py` - get id.loc.gov URIs into bib records, $0.
 
      Do `mrc.py --help` for details.
 
