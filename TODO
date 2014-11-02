@@ -1,10 +1,8 @@
- * Test response for 'name', 'subject' or 'classification' and filter appropriately. 
+ X Test response for 'name', 'subject' or 'classification' and filter appropriately. 
  
  * Interrogate local authorities as second pass over unfound headings (cx_Oracle?)
  
  * Single config file with sections for each util (mrc, ead, owi)?
- 
- * Move or import addowis-marc into addauths-marc
  
  * Make sure we're not passing around type strings any more and delete them
  
